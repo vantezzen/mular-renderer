@@ -583,39 +583,20 @@ function AudioSourceMixin(superclass) {
         }
         MixedAudioSource.prototype.attach = function (movie) {
             var _this = this;
+            // 1 - Set audioNode for super.attach
+            // If attach and detach were called prior to this, audioNode will be
+            // cached. The web audio can't create multiple audio nodes for one media
+            // element.
+            this._audioNode = this.audioNode || movie.actx.createMediaElementSource(this.source);
+            this.audioNode.connect(movie.actx.destination);
+            // 2 - Call super.attach
             _super.prototype.attach.call(this, movie);
+            // 3 - Other attachment chores
             subscribe(movie, 'movie.seek', function () {
                 if (_this.currentTime < 0 || _this.currentTime >= _this.duration)
                     return;
                 _this.source.currentTime = _this.currentTime + _this.sourceStartTime;
             });
-            // TODO: on unattach?
-            subscribe(movie, 'movie.audiodestinationupdate', function (event) {
-                // Connect to new destination if immeidately connected to the existing
-                // destination.
-                if (_this._connectedToDestination) {
-                    _this.audioNode.disconnect(movie.actx.destination);
-                    _this.audioNode.connect(event.destination);
-                }
-            });
-            // connect to audiocontext
-            this._audioNode = this.audioNode || movie.actx.createMediaElementSource(this.source);
-            // Spy on connect and disconnect to remember if it connected to
-            // actx.destination (for Movie#record).
-            var oldConnect = this._audioNode.connect.bind(this.audioNode);
-            this._audioNode.connect = function (destination, outputIndex, inputIndex) {
-                _this._connectedToDestination = destination === movie.actx.destination;
-                return oldConnect(destination, outputIndex, inputIndex);
-            };
-            var oldDisconnect = this._audioNode.disconnect.bind(this.audioNode);
-            this._audioNode.disconnect = function (destination, output, input) {
-                if (_this._connectedToDestination &&
-                    destination === movie.actx.destination)
-                    _this._connectedToDestination = false;
-                return oldDisconnect(destination, output, input);
-            };
-            // Connect to actx.destination by default (can be rewired by user)
-            this.audioNode.connect(movie.actx.destination);
         };
         MixedAudioSource.prototype.detach = function () {
             // Cache dest before super.detach() unsets this.movie
@@ -696,6 +677,9 @@ function AudioSourceMixin(superclass) {
         };
         return MixedAudioSource;
     }(superclass));
+    // Don't add 'source' to publicExcludes because when this class is mixed with
+    // VisualSource, the video VisualSource#source cannot be excluded from
+    // watchPublic.
     return MixedAudioSource;
 }
 
@@ -842,6 +826,83 @@ Base.prototype.type = 'layer';
 Base.prototype.publicExcludes = [];
 Base.prototype.propertyFilters = {};
 
+/*
+ This mixin exists for AudioSourceMixin to extend. AudioSourceMixin exists so we
+ Video can extend both AudioSource and VisualSource.
+ */
+function BaseAudioMixin(superclass) {
+    var MixedBaseAudio = /** @class */ (function (_super) {
+        __extends(MixedBaseAudio, _super);
+        // Constructor with the right `options` type
+        function MixedBaseAudio(options) {
+            return _super.call(this, options) || this;
+        }
+        MixedBaseAudio.prototype.attach = function (movie) {
+            var _this = this;
+            _super.prototype.attach.call(this, movie);
+            // TODO: on unattach?
+            subscribe(movie, 'movie.audiodestinationupdate', function (event) {
+                // Connect to new destination if immeidately connected to the existing
+                // destination.
+                if (_this._connectedToDestination) {
+                    _this.audioNode.disconnect(movie.actx.destination);
+                    _this.audioNode.connect(event.destination);
+                }
+            });
+        };
+        Object.defineProperty(MixedBaseAudio.prototype, "_audioNode", {
+            get: function () {
+                return this.__audioNode;
+            },
+            set: function (node) {
+                var _this = this;
+                if (this.movie === undefined)
+                    throw new Error('Must be attached to a movie to set _audioNode');
+                var prevNode = this.__audioNode;
+                this.__audioNode = node;
+                if (node && node !== prevNode) {
+                    // Cache movie so we'll have it when detaching from it
+                    var movie_1 = this.movie;
+                    // connect to audiocontext
+                    // Spy on connect and disconnect to remember if it connected to
+                    // actx.destination (when we change the audio destination in Movie#record).
+                    // We need to figure out if we should even be changing the destination.
+                    var oldConnect_1 = node.connect.bind(node);
+                    node.connect = function (destination, outputIndex, inputIndex) {
+                        _this._connectedToDestination = destination === movie_1.actx.destination;
+                        return oldConnect_1(destination, outputIndex, inputIndex);
+                    };
+                    var oldDisconnect_1 = node.disconnect.bind(node);
+                    node.disconnect = function (destination, output, input) {
+                        if (_this._connectedToDestination && destination === movie_1.actx.destination)
+                            _this._connectedToDestination = false;
+                        return oldDisconnect_1(destination, output, input);
+                    };
+                }
+            },
+            enumerable: false,
+            configurable: true
+        });
+        Object.defineProperty(MixedBaseAudio.prototype, "audioNode", {
+            get: function () {
+                return this._audioNode;
+            },
+            enumerable: false,
+            configurable: true
+        });
+        return MixedBaseAudio;
+    }(superclass));
+    return MixedBaseAudio;
+}
+
+var BaseAudio = /** @class */ (function (_super) {
+    __extends(BaseAudio, _super);
+    function BaseAudio() {
+        return _super !== null && _super.apply(this, arguments) || this;
+    }
+    return BaseAudio;
+}(BaseAudioMixin(Base)));
+
 // TODO: rename to something more consistent with the naming convention of Visual and VisualSourceMixin
 /**
  * @extends AudioSource
@@ -866,7 +927,7 @@ var Audio = /** @class */ (function (_super) {
             sourceStartTime: 0, duration: undefined });
     };
     return Audio;
-}(AudioSourceMixin(Base)));
+}(AudioSourceMixin(BaseAudio)));
 
 /** Any layer that renders to a canvas */
 var Visual = /** @class */ (function (_super) {
@@ -1149,25 +1210,23 @@ var Text = /** @class */ (function (_super) {
     return Text;
 }(Visual));
 
-// Use mixins instead of `extend`ing two classes (which isn't supported by
-// JavaScript).
+// Intermediary mixins
+var VisualSource = VisualSourceMixin(Visual);
+var VisualSourceWithAudio = BaseAudioMixin(VisualSource);
+// Final mixin
 /**
  * @extends AudioSource
  * @extends VisualSource
  */
-var Video = /** @class */ (function (_super) {
-    __extends(Video, _super);
-    function Video() {
-        return _super !== null && _super.apply(this, arguments) || this;
-    }
-    return Video;
-}(AudioSourceMixin(VisualSourceMixin(Visual))));
+var Video = AudioSourceMixin(VisualSourceWithAudio);
 
 /**
  * @module layer
  */
 
 var index = /*#__PURE__*/Object.freeze({
+    BaseAudioMixin: BaseAudioMixin,
+    BaseAudio: BaseAudio,
     AudioSourceMixin: AudioSourceMixin,
     Audio: Audio,
     Base: Base,
@@ -2725,79 +2784,57 @@ const createAddAudioWorkletModule = (cacheTestResult, createNotSupportedError, e
                  * }
                  * ```
                  */
-                const patchedAudioWorkletProcessor = isSupportingPostMessage
-                    ? 'AudioWorkletProcessor'
-                    : 'class extends AudioWorkletProcessor {__b=new WeakSet();constructor(){super();(p=>p.postMessage=(q=>(m,t)=>q.call(p,m,t?t.filter(u=>!this.__b.has(u)):t))(p.postMessage))(this.port)}}';
+                const patchedSourceWithoutImportStatements = isSupportingPostMessage
+                    ? sourceWithoutImportStatements
+                    : sourceWithoutImportStatements.replace(/\s+extends\s+AudioWorkletProcessor\s*{/, ` extends (class extends AudioWorkletProcessor {__b=new WeakSet();constructor(){super();(p=>p.postMessage=(q=>(m,t)=>q.call(p,m,t?t.filter(u=>!this.__b.has(u)):t))(p.postMessage))(this.port)}}){`);
                 /*
                  * Bug #170: Chrome and Edge do call process() with an array with empty channelData for each input if no input is connected.
                  *
                  * Bug #179: Firefox does not allow to transfer any buffer which has been passed to the process() method as an argument.
                  *
-                 * Bug #190: Safari doesn't throw an error when loading an unparsable module.
-                 *
                  * This is the unminified version of the code used below:
                  *
                  * ```js
                  * `${ importStatements };
-                 * ((AudioWorkletProcessor, registerProcessor) => {${ sourceWithoutImportStatements }
-                 * })(
-                 *     ${ patchedAudioWorkletProcessor },
-                 *     (name, processorCtor) => registerProcessor(name, class extends processorCtor {
+                 * ((registerProcessor) => {${ sourceWithoutImportStatements }
+                 * })((name, processorCtor) => registerProcessor(name, class extends processorCtor {
                  *
-                 *         __collectBuffers = (array) => {
-                 *             array.forEach((element) => this.__buffers.add(element.buffer));
-                 *         };
+                 *     __collectBuffers = (array) => {
+                 *         array.forEach((element) => this.__buffers.add(element.buffer));
+                 *     };
                  *
-                 *         process (inputs, outputs, parameters) {
-                 *             inputs.forEach(this.__collectBuffers);
-                 *             outputs.forEach(this.__collectBuffers);
-                 *             this.__collectBuffers(Object.values(parameters));
+                 *     process (inputs, outputs, parameters) {
+                 *         inputs.forEach(this.__collectBuffers);
+                 *         outputs.forEach(this.__collectBuffers);
+                 *         this.__collectBuffers(Object.values(parameters));
                  *
-                 *             return super.process(
-                 *                 (inputs.map((input) => input.some((channelData) => channelData.length === 0)) ? [ ] : input),
-                 *                 outputs,
-                 *                 parameters
-                 *             );
-                 *         }
-                 *
-                 *     })
-                 * );
-                 *
-                 * registerProcessor('__sac', class extends AudioWorkletProcessor{
-                 *
-                 *     process () {
-                 *         return false;
+                 *         return super.process(
+                 *             (inputs.map((input) => input.some((channelData) => channelData.length === 0)) ? [ ] : input),
+                 *             outputs,
+                 *             parameters
+                 *         );
                  *     }
                  *
-                 * })`
+                 * }))`
                  * ```
                  */
                 const memberDefinition = isSupportingPostMessage ? '' : '__c = (a) => a.forEach(e=>this.__b.add(e.buffer));';
                 const bufferRegistration = isSupportingPostMessage
                     ? ''
                     : 'i.forEach(this.__c);o.forEach(this.__c);this.__c(Object.values(p));';
-                const wrappedSource = `${importStatements};((AudioWorkletProcessor,registerProcessor)=>{${sourceWithoutImportStatements}
-})(${patchedAudioWorkletProcessor},(n,p)=>registerProcessor(n,class extends p{${memberDefinition}process(i,o,p){${bufferRegistration}return super.process(i.map(j=>j.some(k=>k.length===0)?[]:j),o,p)}}));registerProcessor('__sac',class extends AudioWorkletProcessor{process(){return !1}})`;
+                const wrappedSource = `${importStatements};(registerProcessor=>{${patchedSourceWithoutImportStatements}
+})((n,p)=>registerProcessor(n,class extends p{${memberDefinition}process(i,o,p){${bufferRegistration}return super.process(i.map(j=>j.some(k=>k.length===0)?[]:j),o,p)}}))`;
                 const blob = new Blob([wrappedSource], { type: 'application/javascript; charset=utf-8' });
                 const url = URL.createObjectURL(blob);
                 return nativeContext.audioWorklet
                     .addModule(url, options)
                     .then(() => {
                     if (isNativeOfflineAudioContext(nativeContext)) {
-                        return nativeContext;
+                        return;
                     }
                     // Bug #186: Chrome, Edge and Opera do not allow to create an AudioWorkletNode on a closed AudioContext.
                     const backupOfflineAudioContext = getOrCreateBackupOfflineAudioContext(nativeContext);
-                    return backupOfflineAudioContext.audioWorklet.addModule(url, options).then(() => backupOfflineAudioContext);
-                })
-                    .then((nativeContextOrBackupOfflineAudioContext) => {
-                    try {
-                        // Bug #190: Safari doesn't throw an error when loading an unparsable module.
-                        new AudioWorkletNode(nativeContextOrBackupOfflineAudioContext, '__sac'); // tslint:disable-line:no-unused-expression
-                    }
-                    catch {
-                        throw new SyntaxError();
-                    }
+                    return backupOfflineAudioContext.audioWorklet.addModule(url, options);
                 })
                     .finally(() => URL.revokeObjectURL(url));
             });
@@ -3478,17 +3515,7 @@ const createAudioContextConstructor = (baseAudioContextConstructor, createInvali
             if (nativeAudioContextConstructor === null) {
                 throw new Error('Missing the native AudioContext constructor.');
             }
-            let nativeAudioContext;
-            try {
-                nativeAudioContext = new nativeAudioContextConstructor(options);
-            }
-            catch (err) {
-                // Bug #192 Safari does throw a SyntaxError if the sampleRate is not supported.
-                if (err.code === 12 && err.message === 'sampleRate is not in range') {
-                    throw createNotSupportedError();
-                }
-                throw err;
-            }
+            const nativeAudioContext = new nativeAudioContextConstructor(options);
             // Bug #131 Safari returns null when there are four other AudioContexts running already.
             if (nativeAudioContext === null) {
                 throw createUnknownError();
@@ -4537,12 +4564,14 @@ const createBaseAudioContextConstructor = (addAudioWorkletModule, analyserNodeCo
             return new waveShaperNodeConstructor(this);
         }
         decodeAudioData(audioData, successCallback, errorCallback) {
-            return decodeAudioData(this._nativeContext, audioData).then((audioBuffer) => {
+            return decodeAudioData(this._nativeContext, audioData)
+                .then((audioBuffer) => {
                 if (typeof successCallback === 'function') {
                     successCallback(audioBuffer);
                 }
                 return audioBuffer;
-            }, (err) => {
+            })
+                .catch((err) => {
                 if (typeof errorCallback === 'function') {
                     errorCallback(err);
                 }
@@ -5077,10 +5106,6 @@ const createDecodeAudioData = (audioBufferStore, cacheTestResult, createDataClon
         // Bug #21: Safari does not support promises yet.
         if (cacheTestResult(testPromiseSupport, () => testPromiseSupport(nativeContext))) {
             return nativeContext.decodeAudioData(audioData).then((audioBuffer) => {
-                // Bug #133: Safari does neuter the ArrayBuffer.
-                detachArrayBuffer(audioData).catch(() => {
-                    // Ignore errors.
-                });
                 // Bug #157: Firefox does not allow the bufferOffset to be out-of-bounds.
                 if (!cacheTestResult(testAudioBufferCopyChannelMethodsOutOfBoundsSupport, () => testAudioBufferCopyChannelMethodsOutOfBoundsSupport(audioBuffer))) {
                     wrapAudioBufferCopyChannelMethodsOutOfBounds(audioBuffer);
@@ -5618,8 +5643,7 @@ const createGetOrCreateBackupOfflineAudioContext = (backupOfflineAudioContextSto
         if (nativeOfflineAudioContextConstructor === null) {
             throw new Error('Missing the native OfflineAudioContext constructor.');
         }
-        // Bug #141: Safari does not support creating an OfflineAudioContext with less than 44100 Hz.
-        backupOfflineAudioContext = new nativeOfflineAudioContextConstructor(1, 1, 44100);
+        backupOfflineAudioContext = new nativeOfflineAudioContextConstructor(1, 1, 8000);
         backupOfflineAudioContextStore.set(nativeContext, backupOfflineAudioContext);
         return backupOfflineAudioContext;
     };
@@ -8231,8 +8255,7 @@ const createTestAudioWorkletProcessorPostMessageSupport = (nativeAudioWorkletNod
         const blob = new Blob(['class A extends AudioWorkletProcessor{process(i){this.port.postMessage(i,[i[0][0].buffer])}}registerProcessor("a",A)'], {
             type: 'application/javascript; charset=utf-8'
         });
-        // Bug #141: Safari does not support creating an OfflineAudioContext with less than 44100 Hz.
-        const offlineAudioContext = new nativeOfflineAudioContextConstructor(1, 128, 44100);
+        const offlineAudioContext = new nativeOfflineAudioContextConstructor(1, 128, 8000);
         const url = URL.createObjectURL(blob);
         let isEmittingMessageEvents = false;
         let isEmittingProcessorErrorEvents = false;
@@ -8243,7 +8266,6 @@ const createTestAudioWorkletProcessorPostMessageSupport = (nativeAudioWorkletNod
             audioWorkletNode.port.onmessage = () => (isEmittingMessageEvents = true);
             audioWorkletNode.onprocessorerror = () => (isEmittingProcessorErrorEvents = true);
             oscillator.connect(audioWorkletNode);
-            oscillator.start(0);
             await offlineAudioContext.startRendering();
         }
         catch {
