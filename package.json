@@ -1,9 +1,7 @@
 {
-  "name": "vidar",
+  "name": "mular-renderer",
   "version": "0.8.2",
-  "description": "An extendable video-editing framework for the browser and Node",
-  "browser": "dist/vidar-cjs.js",
-  "types": "dist/index.d.ts",
+  "description": "A modified version of vidar",
   "directories": {
     "doc": "docs",
     "example": "examples",
@@ -64,7 +62,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/clabe45/vidar.git"
+    "url": "git+https://github.com/vantezzen/mular-renderer.git"
   },
   "keywords": [
     "video",
@@ -78,10 +76,10 @@
     "api-driven",
     "vidar"
   ],
-  "author": "clabe45",
+  "author": "vantezzen",
   "license": "GPL-3.0",
   "bugs": {
-    "url": "https://github.com/clabe45/vidar/issues"
+    "url": "https://github.com/vantezzen/mular-renderer/issues"
   },
-  "homepage": "https://github.com/clabe45/vidar#readme"
+  "homepage": "https://github.com/vantezzen/mular-renderer#readme"
 }
